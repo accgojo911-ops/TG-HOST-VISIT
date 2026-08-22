@@ -248,8 +248,7 @@ async def process_uid_list(data_list: list):
             else:
                 failed_count += 1
 
-    return {"tokens": tokens}, success_count, failed_count
-
+    return [{"token": token} for token in tokens], success_count, failed_count
 
 # Keyboard Generator
 def get_main_keyboard():
