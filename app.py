@@ -191,7 +191,7 @@ async def fetch_jwt(session: aiohttp.ClientSession, semaphore: asyncio.Semaphore
         "Accept": "application/json"
     }
 
-    max_retries = 3
+    max_retries = 5
     async with semaphore:
         for attempt in range(1, max_retries + 1):
             await asyncio.sleep(0.005)
@@ -215,7 +215,7 @@ async def fetch_jwt(session: aiohttp.ClientSession, semaphore: asyncio.Semaphore
             
             # ৩য় ট্রাই এর আগে সাময়িক পজ (যদি রিট্রাই করতে হয়)
             if attempt < max_retries:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)
 
     return False, None
 
