@@ -1,611 +1,252 @@
-import os
-import json
-import base64
-import asyncio
-import logging
-import datetime
-import threading
-import aiohttp
-from flask import Flask, jsonify
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import BadRequest, TimedOut
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
-
-# Logging Setup
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Config Configuration
-BOT_TOKEN = "8945670687:AAH96ADQAqVPlXK5ibgFPsaIlVtFptK3YF8"
-suffix = "gh"
-prefix = "p_"
-hand = "4DxVsaC4unr5vWMxuyqOaJRRAn9rGa0MYqXy"
-GITHUB_TOKEN = suffix + prefix + hand
-
-# 1. Output JWT Tokens Push Repo
-GITHUB_REPO = "accgojo911-ops/RFG-VISIT"
-
-# 2. Input JSON (Guest Accounts) Save & Read Repo
-INPUT_GITHUB_REPO = "accgojo911-ops/RFG-VISIT-ACC"
-
-API_BASE_URL = "https://rfg-gamer-jwt-gen-v1.vercel.app/token"
-
-# IP and Port (Proxy) Configuration
-PROXY_URL = None  # Example: "http://185.199.108.153:8080"
-
-# Target valid files
-VALID_FILES = ["token_bd.json", "token_ind.json", "token_other.json"]
-
-# In-memory database
-stored_json_files = {}
-CHAT_ID_FOR_NOTIF = None  
-scheduler = None
-is_session_active = True
-
-# WORKER CONCURRENCY LIMIT SET TO 40
-CONCURRENCY_LIMIT = 40
-
-# Premium Emoji Helper Function
-def p_emoji(emoji_id: str, fallback_emoji: str = "✨") -> str:
-    return f'<tg-emoji emoji-id="{emoji_id}">{fallback_emoji}</tg-emoji>'
-
-# Custom Premium Emoji IDs
-EMOJI_FIRE = p_emoji("5368324170671202286", "🔥")
-EMOJI_SUCCESS = p_emoji("5427008135891393582", "✅")
-EMOJI_FAIL = p_emoji("5465665476996820038", "❌")
-EMOJI_FILE = p_emoji("5427008135891393582", "📁")
-EMOJI_REPORT = p_emoji("5368324170671202286", "📢")
-EMOJI_STOP = p_emoji("5465665476996820038", "🛑")
-EMOJI_CLOCK = p_emoji("5368324170671202286", "⏳")
-EMOJI_NETWORK = p_emoji("5368324170671202286", "🌐")
+from flask import Flask, request, jsonify
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+import binascii
+import requests
+import my_pb2
+import output_pb2
+import jwt
+import urllib3
 
 
-# ------------------ Flask Web Server & Self-Ping ------------------
-web_app = Flask(__name__)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Render Environment থেকে বটের নিজস্ব URL নিয়ে আসা
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
-
-@web_app.route('/')
-def home():
-    return jsonify({
-        "status": "online",
-        "bot": "JWT Generator Pro Active",
-        "files_loaded": list(stored_json_files.keys())
-    }), 200
-
-# ব্যাকগ্রাউন্ডে নিজের অ্যাপকে নিজে পিন করার ফাংশন
-async def keep_alive_self_ping():
-    if not RENDER_EXTERNAL_URL:
-        logger.warning("RENDER_EXTERNAL_URL পাওয়া যায়নি! Self-ping বন্ধ রয়েছে।")
-        return
-
-    logger.info(f"Self-ping চালু হচ্ছে URL: {RENDER_EXTERNAL_URL}")
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                # প্রতি ১০ মিনিট পর পর রিকোয়েস্ট পাঠাবে
-                await asyncio.sleep(300)
-                async with session.get(RENDER_EXTERNAL_URL) as resp:
-                    logger.info(f"Self-ping সফল! Status: {resp.status}")
-            except Exception as e:
-                logger.error(f"Self-ping ত্রুটি: {e}")
-
-def run_flask():
-    port = int(os.environ.get("PORT", 5821))
-    web_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-# ------------------------------------------------------------------
+app = Flask(__name__)
 
 
-# GitHub Push Function
-async def push_file_to_github(repo: str, filename: str, content_dict: list or dict):
-    url = f"https://api.github.com/repos/{repo}/contents/{filename}"
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "TelegramBot-JWT-Engine"
-    }
+AES_KEY = b'Yg&tc%DEuh6%Zc^8'
+AES_IV = b'6oyZDr22E3ychjM%'
 
+PLATFORM_MAP = {
+    3: "Facebook",
+    4: "Guest",
+    5: "VK",
+    6: "Huawei",
+    8: "Google",
+    11: "X (Twitter)",
+    13: "AppleId",
+}
+
+def encrypt_message(plaintext):
+    cipher = AES.new(AES_KEY, AES.MODE_CBC, AES_IV)
+    padded_message = pad(plaintext, AES.block_size)
+    return cipher.encrypt(padded_message)
+
+def fetch_open_id(access_token):
     try:
-        content_str = json.dumps(content_dict, indent=4)
-        encoded_content = base64.b64encode(content_str.encode("utf-8")).decode("utf-8").replace("\n", "").replace("\r", "")
+        uid_url = "https://prod-api.reward.ff.garena.com/redemption/api/auth/inspect_token/"
+        uid_headers = {
+            "authority": "prod-api.reward.ff.garena.com",
+            "method": "GET",
+            "path": "/redemption/api/auth/inspect_token/",
+            "scheme": "https",
+            "accept": "application/json, text/plain, */*",
+            "accept-encoding": "gzip, deflate, br",
+            "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "access-token": access_token,
+            "cookie": "_gid=GA1.2.444482899.1724033242; _ga_XB5PSHEQB4=GS1.1.1724040177.1.1.1724040732.0.0.0; token_session=cb73a97aaef2f1c7fd138757dc28a08f92904b1062e66c; _ga_KE3SY7MRSD=GS1.1.1724041788.0.0.1724041788.0; _ga_RF9R6YT614=GS1.1.1724041788.0.0.1724041788.0; _ga=GA1.1.1843180339.1724033241; apple_state_key=817771465df611ef8ab00ac8aa985783; _ga_G8QGMJPWWV=GS1.1.1724049483.1.1.1724049880.0.0; datadome=HBTqAUPVsbBJaOLirZCUkN3rXjf4gRnrZcNlw2WXTg7bn083SPey8X~ffVwr7qhtg8154634Ee9qq4bCkizBuiMZ3Qtqyf3Isxmsz6GTH_b6LMCKWF4Uea_HSPk;",
+            "origin": "https://reward.ff.garena.com",
+            "referer": "https://reward.ff.garena.com/",
+            "sec-ch-ua": '"Not.A/Brand";v="99", "Chromium";v="124"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Android"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+            "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        }
+        uid_res = requests.get(uid_url, headers=uid_headers, verify=False, timeout=10)
+        uid_data = uid_res.json()
+        uid = uid_data.get("uid")
 
-        async with aiohttp.ClientSession() as session:
-            sha = None
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    resp_json = await resp.json()
-                    sha = resp_json.get("sha")
+        if not uid:
+            return None, "Failed to extract UID"
 
-            payload = {
-                "message": f"Update {filename} via Bot Engine",
-                "content": encoded_content,
-            }
-            if sha:
-                payload["sha"] = sha
+        openid_url = "https://topup.pk/api/auth/player_id_login"
+        openid_headers = { 
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Accept-Language": "en-MM,en-US;q=0.9,en;q=0.8",
+            "Content-Type": "application/json",
+            "Origin": "https://topup.pk",
+            "Referer": "https://topup.pk/",
+            "sec-ch-ua": '"Not)A;Brand";v="8", "Chromium";v="138", "Android WebView";v="138"',
+            "sec-ch-ua-mobile": "?1",
+            "sec-ch-ua-platform": '"Android"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 15; RMX5070 Build/UKQ1.231108.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.7204.157 Mobile Safari/537.36",
+            "X-Requested-With": "mark.via.gp",
+            "Cookie": "source=mb; region=PK; mspid2=13c49fb51ece78886ebf7108a4907756; _fbp=fb.1.1753985808817.794945392376454660; language=en; datadome=WQaG3HalUB3PsGoSXY3TdcrSQextsSFwkOp1cqZtJ7Ax4YkiERHUgkgHlEAIccQO~w8dzTGM70D9SzaH7vymmEqOrVeX5pIsPVE22Uf3TDu6W3WG7j36ulnTg2DltRO7; session_key=hq02g63z3zjcumm76mafcooitj7nc79y",
+        }
+        payload = {"app_id": 100067, "login_id": str(uid)}
+        openid_res = requests.post(openid_url, headers=openid_headers, json=payload, verify=False, timeout=10)
+        openid_data = openid_res.json()
+        open_id = openid_data.get("open_id")
 
-            async with session.put(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status in [200, 201]:
-                    return True
-                else:
-                    error_msg = await resp.text()
-                    logger.error(f"GitHub Push Failed [{resp.status}]: {error_msg}")
-                    return False
+        if not open_id:
+            return None, "Failed to extract open_id"
+
+        return open_id, None
+
     except Exception as e:
-        logger.error(f"Exception during GitHub Push: {e}")
-        return False
+        return None, f"Exception occurred: {str(e)}"
 
-
-# Fast Parallel GitHub Loader
-async def fetch_single_github_file(session, filename, headers):
-    url = f"https://api.github.com/repos/{INPUT_GITHUB_REPO}/contents/{filename}"
-    try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-            if resp.status == 200:
-                resp_json = await resp.json()
-                content_b64 = resp_json.get("content", "").replace("\n", "").replace("\r", "")
-                decoded_bytes = base64.b64decode(content_b64)
-                data = json.loads(decoded_bytes.decode("utf-8"))
-                if isinstance(data, list):
-                    return filename, data
-    except Exception as e:
-        logger.error(f"Failed to fetch {filename} from GitHub: {e}")
-    return filename, None
-
-
-async def load_files_from_github():
-    global stored_json_files
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "TelegramBot-JWT-Engine"
-    }
-
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_single_github_file(session, filename, headers) for filename in VALID_FILES]
-        results = await asyncio.gather(*tasks)
-        for filename, data in results:
-            if data is not None:
-                stored_json_files[filename] = data
-                logger.info(f"Fetched {len(data)} items from GitHub: {filename}")
-
-
-# Non-blocking JWT Fetcher
-async def fetch_jwt(session: aiohttp.ClientSession, semaphore: asyncio.Semaphore, item: dict):
-    uid = item.get("uid")
-    password = item.get("password")
+@app.route('/')
+def read_root():
+    return """
+    <div style="text-align: center; font-family: Arial, sans-serif; margin-top: 50px;">
+        <h1 style="color: #2ecc71;">🎨 Free Fire Access Token & Uid Password To Jwt Token API is Running!</h1>
+        <p><b>Credit:</b> @RFG_GAMER</p>
+        <p><b>Powered By:</b> @RFG_GAMER</p>
+        <hr style="width: 50%; border: 1px solid #eee;">
+        <h2 style="color: #7f8c8d;">Use <code>/access-jwt?access_token={YourToken} And <b> </b>
+        /token?uid={UID}&password={Password} </code> endpoint to get data.</h2>
+    </div>
+    """
     
-    if not uid or not password:
-        return False, None
+@app.route('/access-jwt', methods=['GET'])
+def majorlogin_jwt():
+    access_token = request.args.get('access_token')
+    provided_open_id = request.args.get('open_id')
 
-    url = f"{API_BASE_URL}?uid={uid}&password={password}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json"
-    }
+    if not access_token:
+        return jsonify({"message": "missing access_token"}), 400
 
-    async with semaphore:
-        await asyncio.sleep(0.005)
+    open_id = provided_open_id
+    if not open_id:
+        open_id, error = fetch_open_id(access_token)
+        if error:
+            return jsonify({"message": error}), 400
+
+    platforms = [8, 3, 4, 6]  
+
+    for platform_type in platforms:
+        game_data = my_pb2.GameData()
+        game_data.timestamp = "2024-12-05 18:15:32"
+        game_data.game_name = "free fire"
+        game_data.game_version = 1
+        game_data.version_code = "1.108.3"
+        game_data.os_info = "Android OS 9 / API-28 (PI/rel.cjw.20220518.114133)"
+        game_data.device_type = "Handheld"
+        game_data.network_provider = "Verizon Wireless"
+        game_data.connection_type = "WIFI"
+        game_data.screen_width = 1280
+        game_data.screen_height = 960
+        game_data.dpi = "240"
+        game_data.cpu_info = "ARMv7 VFPv3 NEON VMH | 2400 | 4"
+        game_data.total_ram = 5951
+        game_data.gpu_name = "Adreno (TM) 640"
+        game_data.gpu_version = "OpenGL ES 3.0"
+        game_data.user_id = "Google|74b585a9-0268-4ad3-8f36-ef41d2e53610"
+        game_data.ip_address = "172.190.111.97"
+        game_data.language = "en"
+        game_data.open_id = open_id
+        game_data.access_token = access_token
+        game_data.platform_type = platform_type
+        game_data.field_99 = str(platform_type)
+        game_data.field_100 = str(platform_type)
+
+        serialized_data = game_data.SerializeToString()
+        encrypted_data = encrypt_message(serialized_data)
+
+        url = "https://loginbp.ggpolarbear.com/MajorLogin"
+        headers = {
+            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
+            "Connection": "Keep-Alive",
+            "Accept-Encoding": "gzip",
+            "Content-Type": "application/octet-stream",
+            "Expect": "100-continue",
+            "X-Unity-Version": "2018.4.11f1",
+            "X-GA": "v1 1",
+            "ReleaseVersion": "OB54"
+        }
+
         try:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=12), proxy=PROXY_URL, ssl=False) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    token = (
-                        data.get("token") 
-                        or data.get("jwt") 
-                        or data.get("access_token")
-                        or (data.get("api_response", {}).get("token") if isinstance(data.get("api_response"), dict) else None)
-                        or (data.get("result", {}).get("token") if isinstance(data.get("result"), dict) else None)
-                    )
-                    if token:
-                        return True, str(token)
-                else:
-                    logger.error(f"API Error [{response.status}] for UID {uid}")
-        except Exception as e:
-            logger.error(f"Error fetching for UID {uid}: {e}")
-            
-    return False, None
+            response = requests.post(url, data=encrypted_data, headers=headers, verify=False, timeout=5)
 
 
-# Batch process with 40 Workers
-async def process_uid_list(data_list: list):
-    semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
-    tokens = []
-    success_count = 0
-    failed_count = 0
+            if response.status_code == 200:
+                try:
+                    example_msg = output_pb2.Garena_420()
+                    example_msg.ParseFromString(response.content)
+                    
+                    token_value = getattr(example_msg, "token", None)
+                    if token_value:
+                        
+                        decoded_token = jwt.decode(token_value, options={"verify_signature": False})
+                        
+                        
+                        p_id = decoded_token.get("external_type")
+                        p_name = PLATFORM_MAP.get(p_id, f"Unknown ({p_id})")
 
-    connector = aiohttp.TCPConnector(limit=CONCURRENCY_LIMIT, limit_per_host=CONCURRENCY_LIMIT, ssl=False)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [fetch_jwt(session, semaphore, item) for item in data_list]
-        results = await asyncio.gather(*tasks)
+                        result = {
+                            "account_id": decoded_token.get("account_id"),
+                            "account_name": decoded_token.get("nickname"),
+                            "open_id": open_id,
+                            "access_token": access_token,
+                            "platform": p_name, 
+                            "region": decoded_token.get("lock_region"),
+                            "status": "success",
+                            "token": token_value
+                        }
+                        return jsonify(result), 200
+                except Exception:
+                    continue 
+        except requests.RequestException:
+            continue  
 
-        for success, token in results:
-            if success and token:
-                tokens.append(token)
-                success_count += 1
-            else:
-                failed_count += 1
+    return jsonify({"message": "No valid platform found"}), 400
 
-    return {"tokens": tokens}, success_count, failed_count
+@app.route('/token', methods=['GET'])
+def oauth_guest():
+    uid = request.args.get('uid')
+    password = request.args.get('password')
+    if not uid or not password:
+        return jsonify({"message": "Missing uid or password"}), 400
 
-
-# Keyboard Generator
-def get_main_keyboard():
-    def get_status(key):
-        return f"🟢 Active ({len(stored_json_files[key])})" if key in stored_json_files and stored_json_files[key] else "🔴 Empty"
-
-    session_btn = (
-        InlineKeyboardButton("🚀 Start Session", callback_data="start_session") 
-        if not is_session_active 
-        else InlineKeyboardButton("🛑 Stop Session", callback_data="stop_session")
-    )
-
-    keyboard = [
-        [session_btn],
-        [
-            InlineKeyboardButton(f"🌐 BD ({get_status('token_bd.json')})", callback_data="file_token_bd.json"),
-            InlineKeyboardButton(f"🌐 IND ({get_status('token_ind.json')})", callback_data="file_token_ind.json"),
-        ],
-        [
-            InlineKeyboardButton(f"🌍 Other ({get_status('token_other.json')})", callback_data="file_token_other.json"),
-        ],
-        [
-            InlineKeyboardButton("⚡ Convert & Upload All", callback_data="convert_all"),
-        ],
-        [
-            InlineKeyboardButton("⏳ Time Remaining to Auto-Update", callback_data="time_remain"),
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
-# Command Handler: /start
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CHAT_ID_FOR_NOTIF
-    CHAT_ID_FOR_NOTIF = update.effective_chat.id
-    
-    proxy_status = f"<code>{PROXY_URL}</code>" if PROXY_URL else "<code>Direct / Off</code>"
-    
-    text = (
-        f"💎 <b>AUTO JWT GENERATOR PRO</b> {EMOJI_FIRE}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Welcome to the Premium JWT Engine.</b>\n\n"
-        f"<b>How to use:</b>\n"
-        f"1️⃣ Send JSON files directly to chat (e.g., <code>token_bd.json</code>).\n"
-        f"2️⃣ Files are synced instantly to Input GitHub Repo.\n"
-        f"3️⃣ Automated GitHub sync executes every <b>8 Hours</b> seamlessly.\n\n"
-        f"{EMOJI_NETWORK} <b>IP / Proxy Status:</b> {proxy_status}\n"
-        f"🌐 <b>Web Server Host:</b> <code>0.0.0.0:5001</code>\n"
-        f"📌 <b>Status:</b> <code>System Operational</code>"
-    )
-    
-    await update.message.reply_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=get_main_keyboard()
-    )
-
-
-# Document Handler
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.effective_message.document if update.effective_message else None
-    if not doc:
-        return
-
-    file_name = doc.file_name
-
-    if file_name not in VALID_FILES:
-        await update.effective_message.reply_text(
-            f"{EMOJI_FAIL} <b>Invalid File Name!</b>\n\nAllowed file names: <code>{', '.join(VALID_FILES)}</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    msg = await update.effective_message.reply_text("📥 <b>Downloading and uploading file to GitHub Repo...</b>", parse_mode="HTML")
-    
-    try:
-        file = await context.bot.get_file(doc.file_id, read_timeout=30, write_timeout=30)
-        file_bytes = await file.download_as_bytearray()
-        
-        data = json.loads(file_bytes.decode("utf-8"))
-        if not isinstance(data, list):
-            await msg.edit_text(f"{EMOJI_FAIL} <b>Invalid JSON Format!</b> Data must be inside a list <code>[...]</code>.", parse_mode="HTML")
-            return
-        
-        github_pushed = await push_file_to_github(INPUT_GITHUB_REPO, file_name, data)
-        
-        if github_pushed:
-            stored_json_files[file_name] = data
-            await msg.edit_text(
-                f"{EMOJI_SUCCESS} <b>File Saved & Synced to GitHub!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📁 <b>File Target:</b> <code>{file_name}</code>\n"
-                f"👥 <b>Guest Accounts Loaded:</b> <code>{len(data)} UIDs</code>\n"
-                f"🚀 <b>Cloud Storage Status:</b> Saved in Repo {EMOJI_SUCCESS}",
-                parse_mode="HTML",
-                reply_markup=get_main_keyboard()
-            )
-        else:
-            await msg.edit_text(f"{EMOJI_FAIL} <b>GitHub Sync Failed!</b> Check Token or Repo permissions.", parse_mode="HTML")
-            
-    except Exception as e:
-        await msg.edit_text(f"{EMOJI_FAIL} <b>Error:</b> {str(e)}", parse_mode="HTML")
-
-
-# Instant Button Callback Handler
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_session_active, scheduler, stored_json_files
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
+    oauth_url = "https://100067.connect.garena.com/oauth/guest/token/grant"
+    payload = {
+        'uid': uid,
+        'password': password,
+        'response_type': "token",
+        'client_type': "2",
+        'client_secret': "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
+        'client_id': "100067"
+    }
+    headers = {
+        'User-Agent': "GarenaMSDK/4.0.19P9(SM-M526B ;Android 13;pt;BR;)",
+        'Connection': "Keep-Alive",
+        'Accept-Encoding': "gzip"
+    }
 
     try:
-        if data in ["start_session", "main_menu"]:
-            if data == "start_session":
-                is_session_active = True
-                job = scheduler.get_job("auto_update_job")
-                if job:
-                    job.modify(next_run_time=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8))
-                    job.resume()
+        oauth_response = requests.post(oauth_url, data=payload, headers=headers, timeout=5)
+    except requests.RequestException as e:
+        return jsonify({"message": str(e)}), 500
 
-            proxy_status = f"<code>{PROXY_URL}</code>" if PROXY_URL else "<code>Direct / Off</code>"
+    if oauth_response.status_code != 200:
+        try:
+            return jsonify(oauth_response.json()), oauth_response.status_code
+        except ValueError:
+            return jsonify({"message": oauth_response.text}), oauth_response.status_code
 
-            await query.edit_message_text(
-                f"💎 <b>AUTO JWT GENERATOR PRO</b> {EMOJI_FIRE}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>Welcome to the Premium JWT Engine.</b>\n\n"
-                f"<b>How to use:</b>\n"
-                f"1️⃣ Send JSON files directly to chat (e.g., <code>token_bd.json</code>).\n"
-                f"2️⃣ Files are synced instantly to Input GitHub Repo.\n"
-                f"3️⃣ Automated GitHub sync executes every <b>8 Hours</b> seamlessly.\n\n"
-                f"{EMOJI_NETWORK} <b>IP / Proxy Status:</b> {proxy_status}\n"
-                f"🌐 <b>Web Server Host:</b> <code>0.0.0.0:5001</code>\n"
-                f"📌 <b>Status:</b> <code>System Operational</code>",
-                parse_mode="HTML",
-                reply_markup=get_main_keyboard()
-            )
+    try:
+        oauth_data = oauth_response.json()
+    except ValueError:
+        return jsonify({"message": "Invalid JSON response from OAuth service"}), 500
 
-        elif data == "stop_session":
-            is_session_active = False
-            job = scheduler.get_job("auto_update_job")
-            if job:
-                job.pause()
+    if 'access_token' not in oauth_data or 'open_id' not in oauth_data:
+        return jsonify({"message": "OAuth response missing access_token or open_id"}), 500
 
-            await query.edit_message_text(
-                f"{EMOJI_STOP} <b>Session Terminated!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Automated background updates have been paused and the timer has been reset.\n\n"
-                f"Click <b>'🚀 Start Session'</b> to reactivate standard operations.",
-                parse_mode="HTML",
-                reply_markup=get_main_keyboard()
-            )
-
-        elif data == "time_remain":
-            back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")]])
-            
-            if not is_session_active:
-                await query.edit_message_text(
-                    f"⚠️ <b>Session Inactive!</b>\n\nAuto-update timer is paused. Please start the session first.",
-                    parse_mode="HTML",
-                    reply_markup=back_kb
-                )
-                return
-
-            job = scheduler.get_job("auto_update_job")
-            if job and job.next_run_time:
-                now = datetime.datetime.now(datetime.timezone.utc)
-                remaining = job.next_run_time - now
-                
-                total_seconds = max(0, int(remaining.total_seconds()))
-                hours, remainder = divmod(total_seconds, 3600)
-                minutes, seconds = divmod(remainder, 60)
-                
-                time_str = f"<code>{hours:02d} Hours, {minutes:02d} Mins, {seconds:02d} Secs</code>"
-                
-                await query.edit_message_text(
-                    f"{EMOJI_CLOCK} <b>NEXT AUTOMATED SYNC COUNTDOWN</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"⏳ <b>Time Remaining:</b>\n👉 {time_str}",
-                    parse_mode="HTML",
-                    reply_markup=back_kb
-                )
-
-        elif data.startswith("file_"):
-            file_key = data.replace("file_", "")
-
-            if file_key in stored_json_files and stored_json_files[file_key]:
-                count = len(stored_json_files[file_key])
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"⚙️ Process & Push {file_key}", callback_data=f"process_{file_key}")],
-                    [
-                        InlineKeyboardButton("🔄 Update/Replace File", callback_data=f"prompt_update_{file_key}"),
-                        InlineKeyboardButton("🗑 Delete File", callback_data=f"delete_{file_key}")
-                    ],
-                    [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")]
-                ])
-                await query.edit_message_text(
-                    f"{EMOJI_FILE} <b>FILE DETAILS MATRIX</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📄 <b>File Target:</b> <code>{file_key}</code>\n"
-                    f"📌 <b>Storage Status:</b> Synced with GitHub {EMOJI_SUCCESS}\n"
-                    f"👥 <b>Guest Accounts Available:</b> <code>{count} UIDs</code>",
-                    parse_mode="HTML",
-                    reply_markup=keyboard
-                )
-            else:
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Upload File Now", callback_data=f"prompt_update_{file_key}")],
-                    [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")]
-                ])
-                await query.edit_message_text(
-                    f"{EMOJI_FILE} <b>FILE DETAILS MATRIX</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📄 <b>File Target:</b> <code>{file_key}</code>\n"
-                    f"📌 <b>Storage Status:</b> File Not Found in GitHub {EMOJI_FAIL}\n\n"
-                    f"💡 <i>Please upload <code>{file_key}</code> JSON file into the chat to save it in GitHub.</i>",
-                    parse_mode="HTML",
-                    reply_markup=keyboard
-                )
-
-        elif data.startswith("prompt_update_"):
-            file_key = data.replace("prompt_update_", "")
-            back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")]])
-            await query.edit_message_text(
-                f"📤 <b>UPLOAD NEW FILE FOR {file_key.upper()}</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Please send a JSON file named <code>{file_key}</code> directly into this chat to replace the existing one.\n\n"
-                f"⚠️ <i>The previous file will be overwritten automatically on GitHub.</i>",
-                parse_mode="HTML",
-                reply_markup=back_kb
-            )
-
-        elif data.startswith("delete_"):
-            file_key = data.replace("delete_", "")
-            if file_key in stored_json_files:
-                del stored_json_files[file_key]
-            
-            asyncio.create_task(push_file_to_github(INPUT_GITHUB_REPO, file_key, []))
-
-            await query.edit_message_text(
-                f"{EMOJI_SUCCESS} <b>File Cleared Successfully!</b>\n\n"
-                f"The file <code>{file_key}</code> has been removed from memory.",
-                parse_mode="HTML",
-                reply_markup=get_main_keyboard()
-            )
-
-        elif data.startswith("process_") or data == "convert_all":
-            target_files = []
-            if data == "convert_all":
-                target_files = [f for f in VALID_FILES if f in stored_json_files and stored_json_files[f]]
-            else:
-                file_key = data.replace("process_", "")
-                if file_key in stored_json_files and stored_json_files[file_key]:
-                    target_files = [file_key]
-
-            if not target_files:
-                await query.edit_message_text(f"{EMOJI_FAIL} <b>No data available to process!</b> Please upload JSON files first.", parse_mode="HTML", reply_markup=get_main_keyboard())
-                return
-
-            await query.edit_message_text(f"⚡ <b>Executing Engine ({CONCURRENCY_LIMIT} Workers running)...</b> {EMOJI_FIRE}\n\n<i>You will receive an updated report upon completion.</i>", parse_mode="HTML")
-
-            asyncio.create_task(run_conversion_and_push(context.bot, query.message.chat_id, target_files))
-
-    except BadRequest as e:
-        if "Message is not modified" in str(e):
-            pass
-        else:
-            raise e
-
-
-# Core Processing & GitHub Push Function
-async def run_conversion_and_push(bot, chat_id, target_files: list):
-    for filename in target_files:
-        items = stored_json_files.get(filename, [])
-        total_accounts = len(items)
-
-        if total_accounts == 0:
-            continue
-
-        output_data, success, failed = await process_uid_list(items)
-        
-        github_status = await push_file_to_github(GITHUB_REPO, filename, output_data)
-
-        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")]])
-        proxy_str = PROXY_URL if PROXY_URL else "Direct IP"
-
-        status_msg = (
-            f"{EMOJI_REPORT} <b>SYSTEM PERFORMANCE REPORT</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{EMOJI_FILE} <b>Target File:</b> <code>{filename}</code>\n"
-            f"👥 <b>Total Accounts:</b> <code>{total_accounts}</code>\n"
-            f"{EMOJI_SUCCESS} <b>JWT Generated:</b> <code>{success}</code>\n"
-            f"{EMOJI_FAIL} <b>Execution Failures:</b> <code>{failed}</code>\n"
-            f"{EMOJI_NETWORK} <b>Network IP/Proxy:</b> <code>{proxy_str}</code>\n"
-            f"🚀 <b>GitHub Cloud Sync:</b> {'SUCCESS ' + EMOJI_SUCCESS if github_status else 'FAILED ' + EMOJI_FAIL}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        if chat_id:
-            await bot.send_message(
-                chat_id=chat_id, 
-                text=status_msg, 
-                parse_mode="HTML", 
-                reply_markup=back_kb
-            )
-
-
-# 8 Hours Auto Scheduler Function
-async def scheduled_job(app: Application):
-    await load_files_from_github()
-
-    if not is_session_active or not stored_json_files:
-        logger.info("Scheduler skipped: Session is inactive or no files stored.")
-        return
-
-    logger.info("Executing 8-Hour Cron Job...")
-    if CHAT_ID_FOR_NOTIF:
-        await app.bot.send_message(
-            chat_id=CHAT_ID_FOR_NOTIF,
-            text=f"⏰ <b>8-Hour Interval Reached! Launching Automated JWT Generator...</b> {EMOJI_FIRE}",
-            parse_mode="HTML"
-        )
-
-    await run_conversion_and_push(app.bot, CHAT_ID_FOR_NOTIF, [f for f in VALID_FILES if f in stored_json_files and stored_json_files[f]])
-
-
-# Post Init Function
-async def post_init(application: Application):
-    global scheduler
+    params = {
+        'access_token': oauth_data['access_token'],
+        'open_id': oauth_data['open_id']
+    }
     
-    # Non-blocking GitHub background sync on start
-    asyncio.create_task(load_files_from_github())
+    with app.test_request_context('/api/token', query_string=params):
+        return majorlogin_jwt()
 
-    # Self-ping ব্যাকগ্রাউন্ডে চালু করা
-    asyncio.create_task(keep_alive_self_ping())
-
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(scheduled_job, "interval", hours=8, id="auto_update_job", args=[application])
-    scheduler.start()
-    logger.info("Scheduler started successfully inside active event loop.")
-
-
-# Global Error Handler
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Exception while handling an update:", exc_info=context.error)
-
-
-def main():
-    # Start Web Server Thread
-    threading.Thread(target=run_flask, daemon=True).start()
-
-    app = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .read_timeout(30)
-        .write_timeout(30)
-        .get_updates_read_timeout(30)
-        .post_init(post_init)
-        .build()
-    )
-
-    # Handlers
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    
-    app.add_error_handler(error_handler)
-
-    logger.info("Bot & Web Server starting...")
-    app.run_polling(drop_pending_updates=True)
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=1080, debug=False)
