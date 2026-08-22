@@ -100,7 +100,7 @@ async def keep_alive_self_ping():
                 logger.error(f"Self-ping ত্রুটি: {e}")
 
 def run_flask():
-    port = int(os.environ.get("PORT", 5001))
+    port = int(os.environ.get("PORT", 5821))
     web_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 # ------------------------------------------------------------------
 
