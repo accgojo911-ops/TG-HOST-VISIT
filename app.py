@@ -36,7 +36,7 @@ GITHUB_REPO = "accgojo911-ops/RFG-VISIT"
 # 2. Input JSON (Guest Accounts) Save & Read Repo
 INPUT_GITHUB_REPO = "accgojo911-ops/RFG-VISIT-ACC"
 
-API_BASE_URL = "https://rfg-gamer-jwt-gen-v2.vercel.app/token"
+API_BASE_URL = "https://rfg-gamer-jwt-gen-v1.vercel.app/token"
 
 # IP and Port (Proxy) Configuration
 PROXY_URL = None  # Example: "http://185.199.108.153:8080"
