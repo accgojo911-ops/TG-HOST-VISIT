@@ -24,7 +24,7 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Config Configuration
-BOT_TOKEN = "8945670687:AAH96ADQAqVPlXK5ibgFPsaIlVtFptK3YF8"
+BOT_TOKEN = "8945670687:AAF4P6r11bGtVGHy9_w5TXHsR2SNTN2J9hA"
 suffix = "gh"
 prefix = "p_"
 hand = "4DxVsaC4unr5vWMxuyqOaJRRAn9rGa0MYqXy"
