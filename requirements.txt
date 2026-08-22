@@ -1,5 +1,6 @@
-python-telegram-bot>=20.0
 aiohttp
-Flask
+flask
 APScheduler
+python-telegram-bot
 pycryptodome
+requests
