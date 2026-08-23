@@ -24,39 +24,42 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Config Configuration
-BOT_TOKEN = "8945670687:AAF4P6r11bGtVGHy9_w5TXHsR2SNTN2J9hA"
+BOT_TOKEN = "8945670687:AAH96ADQAqVPlXK5ibgFPsaIlVtFptK3YF8"
 suffix = "gh"
 prefix = "p_"
 hand = "4DxVsaC4unr5vWMxuyqOaJRRAn9rGa0MYqXy"
 GITHUB_TOKEN = suffix + prefix + hand
 
-# Output & Input GitHub Repositories
+# 1. Output JWT Tokens Push Repo
 GITHUB_REPO = "accgojo911-ops/RFG-VISIT"
+
+# 2. Input JSON (Guest Accounts) Save & Read Repo
 INPUT_GITHUB_REPO = "accgojo911-ops/RFG-VISIT-ACC"
 
-# Triple API URLs Setup
-API_URLS = [
-    "https://rfg-gamer-jwt-gen.vercel.app/token",
-    "https://rfg-gamer-jwt-gen-v1.vercel.app/token",
-    "https://rfg-gamer-jwt-gen-v2.vercel.app/token"
-]
+# Dual API URLs Configuration
+API_URL_V1 = "https://rfg-gamer-jwt-gen-v1.vercel.app/token"
+API_URL_V2 = "https://rfg-gamer-jwt-gen-v2.vercel.app/token"
 
+# IP and Port (Proxy) Configuration
 PROXY_URL = None  # Example: "http://185.199.108.153:8080"
+
+# Target valid files
 VALID_FILES = ["token_bd.json", "token_ind.json", "token_other.json"]
 
-# In-memory DB
+# In-memory database
 stored_json_files = {}
 CHAT_ID_FOR_NOTIF = None  
 scheduler = None
 is_session_active = True
 
-# Optimal Concurrency to prevent Vercel 429 Rate Limits
-CONCURRENCY_LIMIT = 25
+# WORKER CONCURRENCY LIMIT SET TO 40
+CONCURRENCY_LIMIT = 40
 
-# Premium Emoji Helper
+# Premium Emoji Helper Function
 def p_emoji(emoji_id: str, fallback_emoji: str = "✨") -> str:
     return f'<tg-emoji emoji-id="{emoji_id}">{fallback_emoji}</tg-emoji>'
 
+# Custom Premium Emoji IDs
 EMOJI_FIRE = p_emoji("5368324170671202286", "🔥")
 EMOJI_SUCCESS = p_emoji("5427008135891393582", "✅")
 EMOJI_FAIL = p_emoji("5465665476996820038", "❌")
@@ -69,6 +72,7 @@ EMOJI_NETWORK = p_emoji("5368324170671202286", "🌐")
 
 # ------------------ Flask Web Server & Self-Ping ------------------
 web_app = Flask(__name__)
+
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
 @web_app.route('/')
@@ -95,7 +99,7 @@ async def keep_alive_self_ping():
                 logger.error(f"Self-ping ত্রুটি: {e}")
 
 def run_flask():
-    port = int(os.environ.get("PORT", 5721))
+    port = int(os.environ.get("PORT", 5001))
     web_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 # ------------------------------------------------------------------
 
@@ -173,81 +177,69 @@ async def load_files_from_github():
                 logger.info(f"Fetched {len(data)} items from GitHub: {filename}")
 
 
-# Smart Single Request Helper
-async def request_jwt_from_api(session: aiohttp.ClientSession, uid: str, password: str, api_url: str):
-    url = f"{api_url}?uid={uid}&password={password}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json"
-    }
-    try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), proxy=PROXY_URL, ssl=False) as response:
-            if response.status == 200:
-                data = await response.json()
-                token = (
-                    data.get("token") 
-                    or data.get("jwt") 
-                    or data.get("access_token")
-                    or (data.get("api_response", {}).get("token") if isinstance(data.get("api_response"), dict) else None)
-                    or (data.get("result", {}).get("token") if isinstance(data.get("result"), dict) else None)
-                )
-                if token:
-                    return str(token)
-    except Exception as e:
-        logger.debug(f"API Error ({api_url}) for UID {uid}: {e}")
-    return None
-
-
-# Advanced Multi-API Fallback Engine (Tries primary URL first, falls back to other 2 URLs)
-async def fetch_jwt_smart(session: aiohttp.ClientSession, semaphore: asyncio.Semaphore, item: dict, primary_api_idx: int):
+# Non-blocking JWT Fetcher with Retry Mechanism (Max 3 Tries)
+async def fetch_jwt(session: aiohttp.ClientSession, semaphore: asyncio.Semaphore, item: dict, api_url: str):
     uid = item.get("uid")
     password = item.get("password")
     
     if not uid or not password:
         return False, None
 
-    # Order of APIs: Primary API -> Remaining APIs
-    target_apis = [API_URLS[primary_api_idx]] + [url for i, url in enumerate(API_URLS) if i != primary_api_idx]
+    url = f"{api_url}?uid={uid}&password={password}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json"
+    }
 
+    max_retries = 3
     async with semaphore:
-        for attempt in range(1, 4):  # Up to 3 Full Attempts
-            for api_url in target_apis:
-                token = await request_jwt_from_api(session, uid, password, api_url)
-                if token:
-                    return True, token
-                await asyncio.sleep(0.1)  # Brief pause before fallback API request
+        for attempt in range(1, max_retries + 1):
+            await asyncio.sleep(0.005)
+            try:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=12), proxy=PROXY_URL, ssl=False) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        token = (
+                            data.get("token") 
+                            or data.get("jwt") 
+                            or data.get("access_token")
+                            or (data.get("api_response", {}).get("token") if isinstance(data.get("api_response"), dict) else None)
+                            or (data.get("result", {}).get("token") if isinstance(data.get("result"), dict) else None)
+                        )
+                        if token:
+                            return True, str(token)
+                    
+                    logger.warning(f"API Attempt {attempt}/{max_retries} failed [{response.status}] for UID {uid}")
+            except Exception as e:
+                logger.warning(f"Error attempt {attempt}/{max_retries} for UID {uid}: {e}")
             
-            await asyncio.sleep(0.5 * attempt)  # Exponential backoff on overall retry
+            # ৩য় ট্রাই এর আগে সাময়িক পজ (যদি রিট্রাই করতে হয়)
+            if attempt < max_retries:
+                await asyncio.sleep(0.5)
 
     return False, None
 
 
-# Process UID List Split across 3 APIs
+# Batch process with 40 Workers and 50/50 Split between V1 & V2
 async def process_uid_list(data_list: list):
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
     tokens = []
     success_count = 0
     failed_count = 0
 
-    total = len(data_list)
-    part_size = (total + 2) // 3  # 3 Equal parts calculation
+    # লিস্ট অর্ধেক ভাগ করা
+    mid_index = (len(data_list) + 1) // 2
+    first_half = data_list[:mid_index]
+    second_half = data_list[mid_index:]
 
-    p1 = data_list[:part_size]
-    p2 = data_list[part_size:part_size * 2]
-    p3 = data_list[part_size * 2:]
-
-    connector = aiohttp.TCPConnector(limit=CONCURRENCY_LIMIT, limit_per_host=10, ssl=False)
+    connector = aiohttp.TCPConnector(limit=CONCURRENCY_LIMIT, limit_per_host=CONCURRENCY_LIMIT, ssl=False)
     async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = []
+        # ১ম অর্ধেক v1 এ এবং ২য় অর্ধেক v2 এ পাঠানো
+        tasks_v1 = [fetch_jwt(session, semaphore, item, API_URL_V1) for item in first_half]
+        tasks_v2 = [fetch_jwt(session, semaphore, item, API_URL_V2) for item in second_half]
         
-        for item in p1:
-            tasks.append(fetch_jwt_smart(session, semaphore, item, primary_api_idx=0))
-        for item in p2:
-            tasks.append(fetch_jwt_smart(session, semaphore, item, primary_api_idx=1))
-        for item in p3:
-            tasks.append(fetch_jwt_smart(session, semaphore, item, primary_api_idx=2))
-
-        results = await asyncio.gather(*tasks)
+        all_tasks = tasks_v1 + tasks_v2
+        results = await asyncio.gather(*all_tasks)
 
         for success, token in results:
             if success and token:
@@ -256,7 +248,7 @@ async def process_uid_list(data_list: list):
             else:
                 failed_count += 1
 
-    return [{"token": token} for token in tokens], success_count, failed_count
+    return {"tokens": tokens}, success_count, failed_count
 
 
 # Keyboard Generator
@@ -305,7 +297,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"2️⃣ Files are synced instantly to Input GitHub Repo.\n"
         f"3️⃣ Automated GitHub sync executes every <b>8 Hours</b> seamlessly.\n\n"
         f"{EMOJI_NETWORK} <b>IP / Proxy Status:</b> {proxy_status}\n"
-        f"🌐 <b>Web Server Host:</b> <code>0.0.0.0:5721</code>\n"
+        f"🌐 <b>Web Server Host:</b> <code>0.0.0.0:5001</code>\n"
         f"📌 <b>Status:</b> <code>System Operational</code>"
     )
     
@@ -390,7 +382,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"2️⃣ Files are synced instantly to Input GitHub Repo.\n"
                 f"3️⃣ Automated GitHub sync executes every <b>8 Hours</b> seamlessly.\n\n"
                 f"{EMOJI_NETWORK} <b>IP / Proxy Status:</b> {proxy_status}\n"
-                f"🌐 <b>Web Server Host:</b> <code>0.0.0.0:5721</code>\n"
+                f"🌐 <b>Web Server Host:</b> <code>0.0.0.0:5001</code>\n"
                 f"📌 <b>Status:</b> <code>System Operational</code>",
                 parse_mode="HTML",
                 reply_markup=get_main_keyboard()
@@ -517,7 +509,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(f"{EMOJI_FAIL} <b>No data available to process!</b> Please upload JSON files first.", parse_mode="HTML", reply_markup=get_main_keyboard())
                 return
 
-            await query.edit_message_text(f"⚡ <b>Executing Triple-Engine ({CONCURRENCY_LIMIT} Workers running)...</b> {EMOJI_FIRE}\n\n<i>You will receive an updated report upon completion.</i>", parse_mode="HTML")
+            await query.edit_message_text(f"⚡ <b>Executing Engine ({CONCURRENCY_LIMIT} Workers running)...</b> {EMOJI_FIRE}\n\n<i>You will receive an updated report upon completion.</i>", parse_mode="HTML")
 
             asyncio.create_task(run_conversion_and_push(context.bot, query.message.chat_id, target_files))
 
@@ -587,7 +579,10 @@ async def scheduled_job(app: Application):
 async def post_init(application: Application):
     global scheduler
     
+    # Non-blocking GitHub background sync on start
     asyncio.create_task(load_files_from_github())
+
+    # Self-ping ব্যাকগ্রাউন্ডে চালু করা
     asyncio.create_task(keep_alive_self_ping())
 
     scheduler = AsyncIOScheduler()
@@ -602,6 +597,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def main():
+    # Start Web Server Thread
     threading.Thread(target=run_flask, daemon=True).start()
 
     app = (
@@ -614,6 +610,7 @@ def main():
         .build()
     )
 
+    # Handlers
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(button_handler))
