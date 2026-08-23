@@ -24,7 +24,7 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Config Configuration
-BOT_TOKEN = "8945670687:AAH96ADQAqVPlXK5ibgFPsaIlVtFptK3YF8"
+BOT_TOKEN = "8945670687:AAH6pas5tTPitul3nb3KoGaRBZog5zjKwGk"
 suffix = "gh"
 prefix = "p_"
 hand = "4DxVsaC4unr5vWMxuyqOaJRRAn9rGa0MYqXy"
@@ -99,7 +99,7 @@ async def keep_alive_self_ping():
                 logger.error(f"Self-ping ত্রুটি: {e}")
 
 def run_flask():
-    port = int(os.environ.get("PORT", 5001))
+    port = int(os.environ.get("PORT", 5251))
     web_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 # ------------------------------------------------------------------
 
